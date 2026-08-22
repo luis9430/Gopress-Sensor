@@ -14,6 +14,19 @@ class GoPress_Agente_Reportero {
 
 	const HOOK_CRON = 'gopress_agente_reportar';
 
+	/**
+	 * Tope de detalle reportado por período — ver PLAN_PLUGIN_SENSOR.md.
+	 * No es "sin límite": un plugin roto disparando el mismo error en cada
+	 * request bajo tráfico moderado podría generar miles de líneas en 5
+	 * minutos, justo el escenario donde más importa que el propio mecanismo
+	 * de observación no se vuelva el problema (payload de varios MB). 200 ya
+	 * cubre con margen el caso real de diagnóstico (antes eran solo 5), y
+	 * los errores además se deduplican (ver agrupar_errores) antes de
+	 * aplicar este tope, así que en la práctica cuesta llegar a 200 salvo
+	 * con decenas de errores realmente distintos en el mismo período.
+	 */
+	const TOPE_DETALLE_POR_PERIODO = 200;
+
 	public static function iniciar() {
 		add_action( self::HOOK_CRON, array( __CLASS__, 'reportar' ) );
 	}
@@ -85,11 +98,14 @@ class GoPress_Agente_Reportero {
 
 	/**
 	 * Agrega las filas del buffer en el resumen que espera el endpoint:
-	 * memoria pico máxima del período, tiempo promedio/máximo, conteo de
-	 * queries lentas y errores con sus 5 peores/últimas muestras. Se agrega
-	 * en PHP, no en SQL, porque queries_lentas/errores están serializados
-	 * como JSON por fila — más simple que un JSON_TABLE de MySQL para el
-	 * volumen que maneja este buffer (unas pocas filas cada 5 minutos).
+	 * memoria pico máxima del período, tiempo promedio/máximo, conteo real
+	 * de queries lentas y errores (sin tope), y el DETALLE de cada uno hasta
+	 * TOPE_DETALLE_POR_PERIODO — antes solo se mandaban "las 5 peores"/
+	 * "los últimos 5", perdiendo el resto de la evidencia real del período.
+	 * Se agrega en PHP, no en SQL, porque queries_lentas/errores están
+	 * serializados como JSON por fila — más simple que un JSON_TABLE de
+	 * MySQL para el volumen que maneja este buffer (unas pocas filas cada
+	 * 5 minutos).
 	 */
 	private static function agregar( $filas ) {
 		$memoria_pico_max      = 0;
@@ -113,33 +129,66 @@ class GoPress_Agente_Reportero {
 			}
 		}
 
-		$total_requests = count( $filas );
+		$total_requests    = count( $filas );
+		$errores_agrupados = self::agrupar_errores( $todos_errores );
 
-		// Las muestras se ordenan para quedarse con "las 5 peores" (más
-		// lentas) y "los últimos 5" errores, no las primeras 5 que
-		// aparecieron — es lo que de verdad interesa ver.
+		// Ordenadas por duración descendente: si hay más de
+		// TOPE_DETALLE_POR_PERIODO, las que se cortan son las MENOS lentas,
+		// no las primeras que aparecieron — es lo que de verdad interesa ver.
 		usort(
 			$todas_queries_lentas,
 			function ( $a, $b ) {
 				return $b['duracion_ms'] <=> $a['duracion_ms'];
 			}
 		);
-		$errores_recientes = array_slice( $todos_errores, -5 );
+		// Los errores agrupados se ordenan por cantidad de repeticiones
+		// descendente — el más frecuente es casi siempre el más relevante
+		// para diagnosticar (un warning que se dispara en cada request pesa
+		// más que uno que ocurrió una sola vez).
+		usort(
+			$errores_agrupados,
+			function ( $a, $b ) {
+				return $b['repeticiones'] <=> $a['repeticiones'];
+			}
+		);
 
 		$primera = reset( $filas );
 		$ultima  = end( $filas );
 
 		return array(
-			'periodo_desde'          => gmdate( 'c', strtotime( $primera->creado_en ) ),
-			'periodo_hasta'          => gmdate( 'c', strtotime( $ultima->creado_en ) ),
-			'requests_medidos'       => $total_requests,
-			'memoria_pico_bytes'     => $memoria_pico_max,
+			'periodo_desde'            => gmdate( 'c', strtotime( $primera->creado_en ) ),
+			'periodo_hasta'            => gmdate( 'c', strtotime( $ultima->creado_en ) ),
+			'requests_medidos'         => $total_requests,
+			'memoria_pico_bytes'       => $memoria_pico_max,
 			'tiempo_ejecucion_prom_ms' => $total_requests > 0 ? (int) round( $suma_tiempo_ms / $total_requests ) : 0,
-			'tiempo_ejecucion_max_ms' => $tiempo_max_ms,
-			'queries_lentas_count'   => count( $todas_queries_lentas ),
-			'queries_lentas_muestra' => array_slice( $todas_queries_lentas, 0, 5 ),
-			'errores_count'          => count( $todos_errores ),
-			'errores_muestra'        => $errores_recientes,
+			'tiempo_ejecucion_max_ms'  => $tiempo_max_ms,
+			'queries_lentas_count'     => count( $todas_queries_lentas ),
+			'queries_lentas_muestra'   => array_slice( $todas_queries_lentas, 0, self::TOPE_DETALLE_POR_PERIODO ),
+			'errores_count'            => count( $todos_errores ),
+			'errores_muestra'          => array_slice( $errores_agrupados, 0, self::TOPE_DETALLE_POR_PERIODO ),
 		);
+	}
+
+	/**
+	 * Deduplica errores idénticos (mismo mensaje+archivo+línea) dentro del
+	 * período, sumando un contador de repeticiones — más útil y mucho más
+	 * liviano que mandar 800 copias literales del mismo warning. Conserva
+	 * nivel/mensaje/archivo/línea del primero encontrado (son idénticos por
+	 * definición de la clave de agrupación) y agrega 'repeticiones'.
+	 */
+	private static function agrupar_errores( $errores ) {
+		$agrupados = array();
+		foreach ( $errores as $error ) {
+			$clave = ( isset( $error['archivo'] ) ? $error['archivo'] : '' ) . ':' .
+				( isset( $error['linea'] ) ? $error['linea'] : '' ) . ':' .
+				( isset( $error['mensaje'] ) ? $error['mensaje'] : '' );
+
+			if ( ! isset( $agrupados[ $clave ] ) ) {
+				$agrupados[ $clave ] = $error;
+				$agrupados[ $clave ]['repeticiones'] = 0;
+			}
+			++$agrupados[ $clave ]['repeticiones'];
+		}
+		return array_values( $agrupados );
 	}
 }
