@@ -27,6 +27,7 @@ require_once GOPRESS_AGENTE_DIR . 'includes/class-config.php';
 require_once GOPRESS_AGENTE_DIR . 'includes/class-buffer.php';
 require_once GOPRESS_AGENTE_DIR . 'includes/class-medidor.php';
 require_once GOPRESS_AGENTE_DIR . 'includes/class-reportero.php';
+require_once GOPRESS_AGENTE_DIR . 'includes/class-hooks-negocio.php';
 
 /**
  * Activación: crea la tabla del buffer, copia el drop-in de queries lentas a
@@ -97,3 +98,4 @@ add_filter(
 
 GoPress_Agente_Medidor::iniciar();
 GoPress_Agente_Reportero::iniciar();
+GoPress_Agente_Hooks_Negocio::iniciar();

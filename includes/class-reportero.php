@@ -84,15 +84,29 @@ class GoPress_Agente_Reportero {
 	}
 
 	/**
-	 * Body 200 con instrucciones pendientes — hoy la única instrucción es
-	 * activar el modo diagnóstico profundo (ver sección 9). Si el body no
-	 * trae ese campo, no se hace nada; un JSON inválido tampoco rompe el
-	 * flujo (json_decode devuelve null y se ignora).
+	 * Body 200 con instrucciones pendientes: modo diagnóstico profundo (ver
+	 * sección 9) y, desde la integración con Activepieces, la lista vigente
+	 * de hooks de negocio a escuchar (ver class-hooks-negocio.php). Un JSON
+	 * inválido no rompe el flujo (json_decode devuelve null y se ignora).
+	 *
+	 * hooks_negocio se guarda si la CLAVE está presente, incluso con un
+	 * array VACÍO — eso es lo que permite desactivar todos los hooks desde
+	 * GoPress sin que el sitio quede con la última config no vacía para
+	 * siempre. Si la clave no está presente del todo (respuesta de un
+	 * GoPress más viejo sin esta funcionalidad, o el body vino vacío por el
+	 * caso legado de 204, ver reportar()), no se toca la config guardada:
+	 * se reintenta sincronizar en el próximo tick de 5 minutos.
 	 */
 	private static function procesar_instrucciones( $body_json ) {
 		$datos = json_decode( $body_json, true );
-		if ( is_array( $datos ) && ! empty( $datos['modo_profundo_hasta'] ) ) {
+		if ( ! is_array( $datos ) ) {
+			return;
+		}
+		if ( ! empty( $datos['modo_profundo_hasta'] ) ) {
 			GoPress_Agente_Config::guardar_modo_profundo_hasta( $datos['modo_profundo_hasta'] );
+		}
+		if ( array_key_exists( 'hooks_negocio', $datos ) && is_array( $datos['hooks_negocio'] ) ) {
+			GoPress_Agente_Hooks_Negocio::guardar_config( $datos['hooks_negocio'] );
 		}
 	}
 
