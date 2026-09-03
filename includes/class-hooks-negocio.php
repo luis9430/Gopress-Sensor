@@ -117,6 +117,8 @@ class GoPress_Agente_Hooks_Negocio {
 		'wp_login'                       => array( __CLASS__, 'extraer_wp_login' ),
 		'wpcf7_mail_sent'                => array( __CLASS__, 'extraer_wpcf7_mail_sent' ),
 		'elementor_pro/forms/new_record' => array( __CLASS__, 'extraer_elementor_pro_form' ),
+		'gform_after_submission'         => array( __CLASS__, 'extraer_gform_after_submission' ),
+		'wpforms_process_complete'       => array( __CLASS__, 'extraer_wpforms_process_complete' ),
 	);
 
 	/**
@@ -213,6 +215,94 @@ class GoPress_Agente_Hooks_Negocio {
 		return array(
 			'form_name' => ( is_object( $record ) && method_exists( $record, 'get' ) ) ? $record->get( 'form_name' ) : null,
 			'campos'    => $campos,
+		);
+	}
+
+	/**
+	 * gform_after_submission: do_action('gform_after_submission', $entry,
+	 * $form) — DOS argumentos, confirmado contra docs.gravityforms.com
+	 * (Entry Object / Form Object / Field Object). $entry es un array
+	 * asociativo donde los VALORES de campo están indexados por el ID
+	 * numérico que ESE formulario le asignó al campo (ej. $entry['7']) —
+	 * no hay clave fija tipo $entry['email'], varía por formulario. La
+	 * única forma estable de encontrar "el" email/nombre es recorrer
+	 * $form['fields'] y filtrar por la propiedad type ("email"/"name"),
+	 * documentada en field-object — nunca por ID fijo. El campo "name" es
+	 * compuesto (sub-inputs $field->inputs, sufijos .3=First/.6=Last según
+	 * field-object), se reconstruye concatenando ambos si existen.
+	 *
+	 * Limitación real: si el formulario tiene más de un campo del mismo
+	 * type (dos campos email, por ejemplo), esto se queda con el PRIMERO
+	 * que encuentra — no hay forma genérica de saber cuál es "el bueno".
+	 * Si el formulario no tiene ningún campo de ese type, la clave queda
+	 * null, nunca se inventa un valor.
+	 */
+	private static function extraer_gform_after_submission( $argumentos ) {
+		$entry = $argumentos[0] ?? array();
+		$form  = $argumentos[1] ?? array();
+		$email  = null;
+		$nombre = null;
+		foreach ( (array) ( $form['fields'] ?? array() ) as $campo ) {
+			$tipo = is_object( $campo ) ? ( $campo->type ?? null ) : ( $campo['type'] ?? null );
+			$id   = is_object( $campo ) ? ( $campo->id ?? null ) : ( $campo['id'] ?? null );
+			if ( $tipo === 'email' && $email === null ) {
+				$email = rgar( $entry, (string) $id );
+			}
+			if ( $tipo === 'name' && $nombre === null ) {
+				$primero  = rgar( $entry, $id . '.3' );
+				$apellido = rgar( $entry, $id . '.6' );
+				$nombre   = trim( $primero . ' ' . $apellido );
+				if ( $nombre === '' ) {
+					// Campo "name" configurado como un solo input simple (sin
+					// dividir first/last) — su valor vive directo en el ID base.
+					$nombre = rgar( $entry, (string) $id ) ?: null;
+				}
+			}
+		}
+		return array(
+			'form_id'  => $entry['form_id'] ?? null,
+			'entry_id' => $entry['id'] ?? null,
+			'email'    => $email,
+			'nombre'   => $nombre,
+		);
+	}
+
+	/**
+	 * wpforms_process_complete: do_action('wpforms_process_complete',
+	 * $fields, $entry, $form_data, $entry_id) — CUATRO argumentos,
+	 * confirmado contra wpforms.com/developers/ Y contra el código fuente
+	 * real de wpforms-lite (includes/class-process.php,
+	 * includes/fields/class-base.php). Se usa $fields (NO $entry, que es
+	 * el $_POST crudo sin normalizar) — cada elemento ya trae 'type' y
+	 * 'value' listos (class-base.php: format()), así que el mismo criterio
+	 * "filtrar por type" de Gravity Forms aplica acá, más simple: WPForms
+	 * ya concatena first/last del campo "name" en 'value' antes de que
+	 * esto se ejecute, no hace falta reconstruirlo a mano.
+	 *
+	 * entry_id puede ser 0 (WPForms Lite, o guardado de entradas
+	 * desactivado) — documentado explícitamente por WPForms, se reenvía
+	 * tal cual sin tratarlo como error.
+	 */
+	private static function extraer_wpforms_process_complete( $argumentos ) {
+		$fields   = $argumentos[0] ?? array();
+		$form_data = $argumentos[2] ?? array();
+		$entry_id  = $argumentos[3] ?? 0;
+		$email     = null;
+		$nombre    = null;
+		foreach ( (array) $fields as $campo ) {
+			$tipo = $campo['type'] ?? null;
+			if ( $tipo === 'email' && $email === null ) {
+				$email = $campo['value'] ?? null;
+			}
+			if ( $tipo === 'name' && $nombre === null ) {
+				$nombre = $campo['value'] ?? null;
+			}
+		}
+		return array(
+			'form_id'  => $form_data['id'] ?? null,
+			'entry_id' => $entry_id,
+			'email'    => $email,
+			'nombre'   => $nombre,
 		);
 	}
 
