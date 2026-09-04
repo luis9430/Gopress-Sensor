@@ -127,6 +127,7 @@ class GoPress_Agente_Hooks_Negocio {
 		'groups_leave_group'                          => array( __CLASS__, 'extraer_bp_groups_leave_group' ),
 		'bp_activity_add'                              => array( __CLASS__, 'extraer_bp_activity_add' ),
 		'friends_friendship_accepted'                  => array( __CLASS__, 'extraer_bp_friends_friendship_accepted' ),
+		'mailpoet_subscriber_created'                  => array( __CLASS__, 'extraer_mailpoet_subscriber_created' ),
 	);
 
 	/**
@@ -513,6 +514,43 @@ class GoPress_Agente_Hooks_Negocio {
 			'friendship_id'      => $argumentos[0] ?? null,
 			'initiator_user_id'  => $argumentos[1] ?? null,
 			'friend_user_id'     => $argumentos[2] ?? null,
+		);
+	}
+
+	/**
+	 * mailpoet_subscriber_created: do_action('mailpoet_subscriber_created',
+	 * $subscriberId) — UN solo argumento, un ENTERO (confirmado contra el
+	 * código fuente real de MailPoet,
+	 * lib/Config/SubscriberChangesNotifier.php — el hook se dispara desde
+	 * ahí, no desde el punto donde se crea el suscriptor, y solo pasa el
+	 * ID). MailPoet usa Doctrine ORM internamente (SubscriberEntity no es
+	 * un array ni un objeto simple), así que no se accede a ese ORM
+	 * directo: se relee el suscriptor completo vía la API PÚBLICA
+	 * documentada de MailPoet ("API used by other plugins", ver
+	 * lib/API/MP/v1/API.php), \MailPoet\API\API::MP('v1')->getSubscriber(),
+	 * que sí acepta un ID entero (confirmado contra
+	 * lib/API/MP/v1/Subscribers.php::findSubscriber) y devuelve un array ya
+	 * armado y estable (id/email/first_name/last_name/status). Se envuelve
+	 * en try/catch porque esa API lanza APIException si el suscriptor ya no
+	 * existe (por ejemplo si se borró en el mismo request) — no debe tumbar
+	 * el resto del reenvío de hooks de negocio por eso.
+	 */
+	private static function extraer_mailpoet_subscriber_created( $argumentos ) {
+		$subscriber_id = $argumentos[0] ?? null;
+		if ( ! $subscriber_id || ! class_exists( '\MailPoet\API\API' ) ) {
+			return array( 'subscriber_id' => $subscriber_id );
+		}
+		try {
+			$suscriptor = \MailPoet\API\API::MP( 'v1' )->getSubscriber( (int) $subscriber_id );
+		} catch ( \Exception $e ) {
+			return array( 'subscriber_id' => $subscriber_id );
+		}
+		return array(
+			'subscriber_id' => $subscriber_id,
+			'email'         => $suscriptor['email'] ?? null,
+			'first_name'    => $suscriptor['first_name'] ?? null,
+			'last_name'     => $suscriptor['last_name'] ?? null,
+			'status'        => $suscriptor['status'] ?? null,
 		);
 	}
 
