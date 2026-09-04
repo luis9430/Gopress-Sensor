@@ -128,6 +128,9 @@ class GoPress_Agente_Hooks_Negocio {
 		'bp_activity_add'                              => array( __CLASS__, 'extraer_bp_activity_add' ),
 		'friends_friendship_accepted'                  => array( __CLASS__, 'extraer_bp_friends_friendship_accepted' ),
 		'mailpoet_subscriber_created'                  => array( __CLASS__, 'extraer_mailpoet_subscriber_created' ),
+		'tutor_after_enroll'                           => array( __CLASS__, 'extraer_tutor_after_enroll' ),
+		'tutor_course_complete_after'                  => array( __CLASS__, 'extraer_tutor_course_complete_after' ),
+		'tutor_quiz_finished'                          => array( __CLASS__, 'extraer_tutor_quiz_finished' ),
 	);
 
 	/**
@@ -551,6 +554,77 @@ class GoPress_Agente_Hooks_Negocio {
 			'first_name'    => $suscriptor['first_name'] ?? null,
 			'last_name'     => $suscriptor['last_name'] ?? null,
 			'status'        => $suscriptor['status'] ?? null,
+		);
+	}
+
+	/**
+	 * tutor_after_enroll: do_action('tutor_after_enroll', $course_id,
+	 * $is_enrolled) — DOS argumentos, confirmado contra el código fuente
+	 * real de Tutor LMS (models/EnrollmentModel.php,
+	 * EnrollmentModel::do_enroll()). Pese al nombre, $is_enrolled NO es un
+	 * booleano: es el ID del POST de inscripción recién creado
+	 * (wp_insert_post() devuelve un ID), con post_author = el usuario
+	 * inscrito (documentado explícitamente en el docblock de do_enroll()).
+	 * El user_id no viaja directo en los argumentos del hook — se relee del
+	 * post de inscripción.
+	 */
+	private static function extraer_tutor_after_enroll( $argumentos ) {
+		$course_id       = $argumentos[0] ?? null;
+		$enrollment_id   = $argumentos[1] ?? null;
+		$post_inscripcion = $enrollment_id ? get_post( $enrollment_id ) : null;
+		return array(
+			'course_id'     => $course_id,
+			'enrollment_id' => $enrollment_id,
+			'user_id'       => $post_inscripcion ? (int) $post_inscripcion->post_author : null,
+		);
+	}
+
+	/**
+	 * tutor_course_complete_after: do_action('tutor_course_complete_after',
+	 * $course_id, $user_id) — DOS argumentos, confirmado contra el código
+	 * fuente real (models/CourseModel.php). Firma directa, sin necesidad de
+	 * releer nada — a diferencia de tutor_after_enroll, acá el user_id sí
+	 * viaja tal cual en el hook.
+	 */
+	private static function extraer_tutor_course_complete_after( $argumentos ) {
+		return array(
+			'course_id' => $argumentos[0] ?? null,
+			'user_id'   => $argumentos[1] ?? null,
+		);
+	}
+
+	/**
+	 * tutor_quiz_finished: do_action('tutor_quiz_finished', $attempt_id,
+	 * $quiz_id, $user_id) — TRES argumentos, confirmado contra el código
+	 * fuente real (classes/Quiz.php,
+	 * Quiz::finishing_quiz_attempt()). El hook NO trae el resultado
+	 * (aprobado/reprobado) ni el puntaje — hay que calcularlo. Se usa
+	 * QuizModel::prepare_attempt_result($attempt_id) en vez de leer la
+	 * columna 'result' de la tabla wp_tutor_quiz_attempts directo: esa
+	 * columna la actualiza update_attempt_result(), que NO se llama desde
+	 * finishing_quiz_attempt() (confirmado leyendo esa función completa) —
+	 * podría no estar calculada todavía en este punto. prepare_attempt_result()
+	 * en cambio es puro: recalcula el resultado desde las respuestas ya
+	 * guardadas, sin depender de si esa columna fue actualizada. Valores
+	 * posibles de 'result': 'pass'/'fail'/'pending' (este último si hay
+	 * preguntas de revisión manual sin calificar todavía, ej. respuesta
+	 * abierta) — confirmado contra las constantes reales de QuizModel.
+	 */
+	private static function extraer_tutor_quiz_finished( $argumentos ) {
+		$attempt_id = $argumentos[0] ?? null;
+		$quiz_id    = $argumentos[1] ?? null;
+		$user_id    = $argumentos[2] ?? null;
+
+		$resultado = null;
+		if ( $attempt_id && class_exists( '\Tutor\Models\QuizModel' ) ) {
+			$resultado = \Tutor\Models\QuizModel::prepare_attempt_result( $attempt_id );
+		}
+
+		return array(
+			'attempt_id' => $attempt_id,
+			'quiz_id'    => $quiz_id,
+			'user_id'    => $user_id,
+			'result'     => $resultado ?: null,
 		);
 	}
 
