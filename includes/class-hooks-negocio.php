@@ -134,6 +134,13 @@ class GoPress_Agente_Hooks_Negocio {
 		'ninja_forms_after_submission'                 => array( __CLASS__, 'extraer_ninja_forms_after_submission' ),
 		'frm_after_create_entry'                       => array( __CLASS__, 'extraer_frm_after_create_entry' ),
 		'fluentform/submission_inserted'               => array( __CLASS__, 'extraer_fluentform_submission_inserted' ),
+		'woocommerce_new_order'                        => array( __CLASS__, 'extraer_woocommerce_order' ),
+		'woocommerce_order_status_completed'           => array( __CLASS__, 'extraer_woocommerce_order' ),
+		'woocommerce_order_status_processing'          => array( __CLASS__, 'extraer_woocommerce_order' ),
+		'woocommerce_order_status_cancelled'           => array( __CLASS__, 'extraer_woocommerce_order' ),
+		'woocommerce_order_status_refunded'            => array( __CLASS__, 'extraer_woocommerce_order' ),
+		'woocommerce_order_refunded'                   => array( __CLASS__, 'extraer_woocommerce_order_refunded' ),
+		'wcfmmp_new_store_created'                     => array( __CLASS__, 'extraer_wcfmmp_new_store_created' ),
 	);
 
 	/**
@@ -763,6 +770,98 @@ class GoPress_Agente_Hooks_Negocio {
 			'entry_id' => $insert_id,
 			'email'    => is_scalar( $email ) ? $email : null,
 			'nombre'   => $nombre,
+		);
+	}
+
+	/**
+	 * woocommerce_new_order: do_action('woocommerce_new_order', $order_id,
+	 * $order) — DOS argumentos, confirmado contra el código fuente real de
+	 * WooCommerce (includes/data-stores/class-wc-order-data-store-cpt.php).
+	 *
+	 * woocommerce_order_status_{estado}: do_action('woocommerce_order_status_'
+	 * . $status_transition['to'], $order_id, $order, $status_transition) —
+	 * TRES argumentos, confirmado contra includes/class-wc-order.php
+	 * (WC_Order::status_transition(), con docblock oficial completo). El
+	 * nombre del hook varía dinámicamente por estado — este extractor se
+	 * reusa para 'completed'/'processing'/'cancelled'/'refunded' (ver
+	 * $extractores_conocidos), cada uno registrado por separado porque
+	 * WordPress no permite enganchar por patrón de nombre.
+	 *
+	 * Ambos hooks comparten la misma forma de $order (objeto WC_Order) — se
+	 * usa la misma función para los dos, ignorando el tercer argumento
+	 * ($status_transition) cuando no está presente (woocommerce_new_order
+	 * solo trae 2). Todos los datos se leen vía métodos públicos
+	 * documentados de WC_Order (get_id/get_status/get_total/get_currency/
+	 * get_billing_email/get_customer_id) — nunca se accede a $order->data
+	 * directo, que no es un contrato estable entre versiones (HPOS vs.
+	 * posts, ver la propia documentación de WooCommerce sobre el Order
+	 * object).
+	 */
+	private static function extraer_woocommerce_order( $argumentos ) {
+		$order = $argumentos[1] ?? null;
+		if ( ! is_object( $order ) || ! method_exists( $order, 'get_id' ) ) {
+			return array( 'order_id' => $argumentos[0] ?? null );
+		}
+		return array(
+			'order_id'     => $order->get_id(),
+			'status'       => $order->get_status(),
+			'total'        => $order->get_total(),
+			'currency'     => $order->get_currency(),
+			'email'        => $order->get_billing_email(),
+			'customer_id'  => $order->get_customer_id(),
+		);
+	}
+
+	/**
+	 * woocommerce_order_refunded: do_action('woocommerce_order_refunded',
+	 * $order_id, $refund_id) — DOS IDs planos, confirmado contra el código
+	 * fuente real (includes/wc-order-functions.php). A diferencia de los
+	 * hooks de arriba, no trae el objeto $order — solo IDs. Se relee el
+	 * pedido completo vía la función pública wc_get_order() (API estable y
+	 * documentada de WooCommerce, la misma que usa todo el ecosistema de
+	 * plugins de terceros para obtener un WC_Order por ID) para poder
+	 * reportar los mismos campos que los demás hooks de WooCommerce.
+	 */
+	private static function extraer_woocommerce_order_refunded( $argumentos ) {
+		$order_id  = $argumentos[0] ?? null;
+		$refund_id = $argumentos[1] ?? null;
+
+		$datos_orden = array( 'order_id' => $order_id );
+		if ( $order_id && function_exists( 'wc_get_order' ) ) {
+			$order = wc_get_order( $order_id );
+			if ( is_object( $order ) && method_exists( $order, 'get_id' ) ) {
+				$datos_orden = self::extraer_woocommerce_order( array( null, $order ) );
+			}
+		}
+
+		$datos_orden['refund_id'] = $refund_id;
+		return $datos_orden;
+	}
+
+	/**
+	 * wcfmmp_new_store_created: do_action('wcfmmp_new_store_created',
+	 * $vendor_id, $wcfm_vendor_form_data) — DOS argumentos, confirmado
+	 * contra el código fuente real de WCFM (WC Frontend Manager,
+	 * controllers/vendors/wcfm-controller-vendors-new.php) — el hook vive
+	 * en el plugin BASE, no en el add-on "WCFM Marketplace"
+	 * (wc-multivendor-marketplace) como sugiere su prefijo 'wcfmmp'.
+	 * $wcfm_vendor_form_data es el array crudo del formulario de alta de
+	 * tienda tal como lo llenó el usuario — su forma varía según qué
+	 * campos existan (dirección, geolocalización, etc.), así que no se lee
+	 * directo: se relee 'store_name' vía get_user_meta() con la clave
+	 * 'wcfmmp_store_name', que el propio código de WCFM ya guardó ahí
+	 * (update_user_meta) en la línea inmediatamente anterior al
+	 * do_action — mismo criterio que otros extractores del catálogo de
+	 * preferir una fuente estable (user meta ya persistido) sobre parsear
+	 * un array de formulario de forma variable.
+	 */
+	private static function extraer_wcfmmp_new_store_created( $argumentos ) {
+		$vendor_id = $argumentos[0] ?? null;
+		$usuario   = $vendor_id ? get_userdata( $vendor_id ) : false;
+		return array(
+			'vendor_id'  => $vendor_id,
+			'store_name' => $vendor_id ? get_user_meta( $vendor_id, 'wcfmmp_store_name', true ) : null,
+			'user_email' => $usuario ? $usuario->user_email : null,
 		);
 	}
 
