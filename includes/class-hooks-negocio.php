@@ -120,6 +120,8 @@ class GoPress_Agente_Hooks_Negocio {
 		'gform_after_submission'                      => array( __CLASS__, 'extraer_gform_after_submission' ),
 		'wpforms_process_complete'                    => array( __CLASS__, 'extraer_wpforms_process_complete' ),
 		'forminator_custom_form_submit_before_set_fields' => array( __CLASS__, 'extraer_forminator_form_submit' ),
+		'metform_after_store_form_data'               => array( __CLASS__, 'extraer_metform_after_store_form_data' ),
+		'everest_forms_process_complete'              => array( __CLASS__, 'extraer_everest_forms_process_complete' ),
 	);
 
 	/**
@@ -351,6 +353,74 @@ class GoPress_Agente_Hooks_Negocio {
 	}
 
 	/**
+	 * metform_after_store_form_data: do_action(
+	 *   'metform_after_store_form_data', $form_id, $form_data,
+	 *   $form_settings, $attributes
+	 * ) — CUATRO argumentos, confirmado contra el código fuente real de
+	 * MetForm (core/entries/action.php) ejecutándose en costalegre.
+	 * $form_data es el $_POST crudo (plano field_id => valor, SIN 'type'
+	 * por campo) — no encaja con el patrón de tipo por campo de los otros
+	 * extractores. MetForm no tiene un widget de "nombre" en absoluto (solo
+	 * 'mf-text' genérico, ver widgets/manifest.php) — no hay forma
+	 * confiable de identificar cuál campo de texto es el nombre de la
+	 * persona, así que ese campo queda SIEMPRE null, a diferencia de los
+	 * demás extractores de esta familia. El email sí es identificable de
+	 * forma confiable: $attributes['email_field_name'] ya trae el nombre
+	 * del campo cuyo widget es 'mf-email' (resuelto por MetForm mismo vía
+	 * get_input_name_by_widget_type(), no hace falta reimplementar esa
+	 * búsqueda acá).
+	 */
+	private static function extraer_metform_after_store_form_data( $argumentos ) {
+		$form_id    = $argumentos[0] ?? null;
+		$form_data  = $argumentos[1] ?? array();
+		$attributes = $argumentos[3] ?? array();
+
+		$campo_email = $attributes['email_field_name'] ?? null;
+		return array(
+			'form_id'  => $form_id,
+			'entry_id' => null,
+			'email'    => $campo_email ? ( $form_data[ $campo_email ] ?? null ) : null,
+			'nombre'   => null,
+		);
+	}
+
+	/**
+	 * everest_forms_process_complete: do_action(
+	 *   'everest_forms_process_complete', $fields, $entry, $form_data,
+	 *   $entry_id
+	 * ) — CUATRO argumentos, misma firma que wpforms_process_complete (no
+	 * es casualidad: Everest Forms comparte linaje de código con WPForms).
+	 * Confirmado contra el código fuente real (class-evf-form-task.php)
+	 * ejecutándose en costalegre. Cada elemento de $fields trae 'type' y
+	 * 'value' — mismo shape que WPForms — pero a diferencia de Gravity
+	 * Forms/WPForms/Forminator, Everest Forms NO tiene un tipo 'name'
+	 * único: el nombre se arma con DOS campos de tipo separado,
+	 * 'first-name' y 'last-name' (ver includes/fields/class-evf-field-
+	 * first-name.php y -last-name.php), de ahí el parámetro tipos_nombre.
+	 */
+	private static function extraer_everest_forms_process_complete( $argumentos ) {
+		$fields    = $argumentos[0] ?? array();
+		$form_data = $argumentos[2] ?? array();
+		$entry_id  = $argumentos[3] ?? 0;
+
+		$campos = self::extraer_formulario_por_tipo_de_campo(
+			(array) $fields,
+			array(
+				'clave_tipo'   => 'type',
+				'clave_valor'  => 'value',
+				'tipos_nombre' => array( 'first-name', 'last-name' ),
+			)
+		);
+
+		return array(
+			'form_id'  => $form_data['id'] ?? null,
+			'entry_id' => $entry_id,
+			'email'    => $campos['email'],
+			'nombre'   => $campos['nombre'],
+		);
+	}
+
+	/**
 	 * Extractor genérico reusado por las 3 familias de formularios de
 	 * arriba (Gravity Forms, WPForms, Forminator) — el patrón que se repite
 	 * en los tres es idéntico: una lista de "campos", cada uno con una
@@ -365,8 +435,16 @@ class GoPress_Agente_Hooks_Negocio {
 	 * el nombre del hook y la posición del array de campos en sus
 	 * argumentos, (b) qué clave marca el tipo de campo y qué valores toma
 	 * para email/nombre, (c) cómo se resuelve el valor real — y escribir un
-	 * extractor de una función corta que llame a esta, igual que los tres
-	 * de arriba. Nunca escribir un cuarto bucle de filtrado desde cero.
+	 * extractor de una función corta que llame a esta, igual que los cuatro
+	 * de arriba. Nunca escribir un quinto bucle de filtrado desde cero.
+	 *
+	 * Everest Forms confirmó un caso nuevo, no cubierto por los primeros
+	 * tres: no tiene un tipo de campo "name" único, separa el nombre en DOS
+	 * campos con tipos distintos (first-name/last-name, ver
+	 * includes/fields/class-evf-field-first-name.php y
+	 * -last-name.php) — de ahí el parámetro tipos_nombre en vez de asumir
+	 * siempre el literal 'name': cuando trae más de un tipo, se concatenan
+	 * en el ORDEN dado, con espacio entre valores no vacíos.
 	 *
 	 * Limitación heredada de los extractores originales, no nueva: si el
 	 * formulario tiene más de un campo del mismo tipo, se queda con el
@@ -378,6 +456,7 @@ class GoPress_Agente_Hooks_Negocio {
 	 *     @type string        $clave_id       Clave del identificador del campo, para pasarlo a resolver_valor. Opcional.
 	 *     @type string        $clave_valor    Clave del valor ya resuelto dentro del propio campo (ej. 'value'). Ignorado si se pasa resolver_valor.
 	 *     @type callable|null $resolver_valor function($campo, $id) => valor real. Si no se pasa, se usa $campo[$clave_valor].
+	 *     @type string[]      $tipos_nombre   Tipos que arman el nombre, en orden (default: ['name']). Más de uno se concatena con espacio.
 	 * }
 	 * @return array{email: mixed, nombre: mixed}
 	 */
@@ -385,12 +464,13 @@ class GoPress_Agente_Hooks_Negocio {
 		$clave_tipo     = $opciones['clave_tipo'];
 		$clave_id       = $opciones['clave_id'] ?? 'id';
 		$clave_valor    = $opciones['clave_valor'] ?? 'value';
+		$tipos_nombre   = $opciones['tipos_nombre'] ?? array( 'name' );
 		$resolver_valor = $opciones['resolver_valor'] ?? function ( $campo ) use ( $clave_valor ) {
 			return is_array( $campo ) ? ( $campo[ $clave_valor ] ?? null ) : null;
 		};
 
-		$email  = null;
-		$nombre = null;
+		$email          = null;
+		$partes_nombre  = array_fill_keys( $tipos_nombre, null );
 		foreach ( $campos as $campo ) {
 			$tipo = is_object( $campo ) ? ( $campo->{$clave_tipo} ?? null ) : ( $campo[ $clave_tipo ] ?? null );
 			$id   = is_object( $campo ) ? ( $campo->{$clave_id} ?? null ) : ( $campo[ $clave_id ] ?? null );
@@ -398,13 +478,14 @@ class GoPress_Agente_Hooks_Negocio {
 			if ( $tipo === 'email' && $email === null ) {
 				$email = $resolver_valor( $campo, $id );
 			}
-			if ( $tipo === 'name' && $nombre === null ) {
-				$nombre = $resolver_valor( $campo, $id );
+			if ( in_array( $tipo, $tipos_nombre, true ) && $partes_nombre[ $tipo ] === null ) {
+				$partes_nombre[ $tipo ] = $resolver_valor( $campo, $id );
 			}
 		}
+		$nombre = trim( implode( ' ', array_filter( $partes_nombre, 'is_scalar' ) ) );
 		return array(
 			'email'  => $email,
-			'nombre' => $nombre,
+			'nombre' => $nombre !== '' ? $nombre : null,
 		);
 	}
 
