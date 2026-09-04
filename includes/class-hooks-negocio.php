@@ -113,12 +113,13 @@ class GoPress_Agente_Hooks_Negocio {
 	 * genérico hasta que se confirme su firma igual de a fondo.
 	 */
 	private static $extractores_conocidos = array(
-		'user_register'                 => array( __CLASS__, 'extraer_user_register' ),
-		'wp_login'                       => array( __CLASS__, 'extraer_wp_login' ),
-		'wpcf7_mail_sent'                => array( __CLASS__, 'extraer_wpcf7_mail_sent' ),
-		'elementor_pro/forms/new_record' => array( __CLASS__, 'extraer_elementor_pro_form' ),
-		'gform_after_submission'         => array( __CLASS__, 'extraer_gform_after_submission' ),
-		'wpforms_process_complete'       => array( __CLASS__, 'extraer_wpforms_process_complete' ),
+		'user_register'                              => array( __CLASS__, 'extraer_user_register' ),
+		'wp_login'                                    => array( __CLASS__, 'extraer_wp_login' ),
+		'wpcf7_mail_sent'                             => array( __CLASS__, 'extraer_wpcf7_mail_sent' ),
+		'elementor_pro/forms/new_record'              => array( __CLASS__, 'extraer_elementor_pro_form' ),
+		'gform_after_submission'                      => array( __CLASS__, 'extraer_gform_after_submission' ),
+		'wpforms_process_complete'                    => array( __CLASS__, 'extraer_wpforms_process_complete' ),
+		'forminator_custom_form_submit_before_set_fields' => array( __CLASS__, 'extraer_forminator_form_submit' ),
 	);
 
 	/**
@@ -240,30 +241,34 @@ class GoPress_Agente_Hooks_Negocio {
 	private static function extraer_gform_after_submission( $argumentos ) {
 		$entry = $argumentos[0] ?? array();
 		$form  = $argumentos[1] ?? array();
-		$email  = null;
-		$nombre = null;
-		foreach ( (array) ( $form['fields'] ?? array() ) as $campo ) {
-			$tipo = is_object( $campo ) ? ( $campo->type ?? null ) : ( $campo['type'] ?? null );
-			$id   = is_object( $campo ) ? ( $campo->id ?? null ) : ( $campo['id'] ?? null );
-			if ( $tipo === 'email' && $email === null ) {
-				$email = rgar( $entry, (string) $id );
+
+		$resolver_valor = function ( $campo, $id ) use ( $entry ) {
+			$primero  = rgar( $entry, $id . '.3' );
+			$apellido = rgar( $entry, $id . '.6' );
+			$nombre   = trim( $primero . ' ' . $apellido );
+			if ( $nombre !== '' ) {
+				return $nombre;
 			}
-			if ( $tipo === 'name' && $nombre === null ) {
-				$primero  = rgar( $entry, $id . '.3' );
-				$apellido = rgar( $entry, $id . '.6' );
-				$nombre   = trim( $primero . ' ' . $apellido );
-				if ( $nombre === '' ) {
-					// Campo "name" configurado como un solo input simple (sin
-					// dividir first/last) — su valor vive directo en el ID base.
-					$nombre = rgar( $entry, (string) $id ) ?: null;
-				}
-			}
-		}
+			// Campo "name" configurado como un solo input simple (sin
+			// dividir first/last), o campo "email" — su valor vive directo
+			// en el ID base.
+			return rgar( $entry, (string) $id ) ?: null;
+		};
+
+		$campos = self::extraer_formulario_por_tipo_de_campo(
+			(array) ( $form['fields'] ?? array() ),
+			array(
+				'clave_tipo'     => 'type',
+				'clave_id'       => 'id',
+				'resolver_valor' => $resolver_valor,
+			)
+		);
+
 		return array(
 			'form_id'  => $entry['form_id'] ?? null,
 			'entry_id' => $entry['id'] ?? null,
-			'email'    => $email,
-			'nombre'   => $nombre,
+			'email'    => $campos['email'],
+			'nombre'   => $campos['nombre'],
 		);
 	}
 
@@ -284,25 +289,122 @@ class GoPress_Agente_Hooks_Negocio {
 	 * tal cual sin tratarlo como error.
 	 */
 	private static function extraer_wpforms_process_complete( $argumentos ) {
-		$fields   = $argumentos[0] ?? array();
+		$fields    = $argumentos[0] ?? array();
 		$form_data = $argumentos[2] ?? array();
 		$entry_id  = $argumentos[3] ?? 0;
-		$email     = null;
-		$nombre    = null;
-		foreach ( (array) $fields as $campo ) {
-			$tipo = $campo['type'] ?? null;
-			if ( $tipo === 'email' && $email === null ) {
-				$email = $campo['value'] ?? null;
-			}
-			if ( $tipo === 'name' && $nombre === null ) {
-				$nombre = $campo['value'] ?? null;
-			}
-		}
+
+		$campos = self::extraer_formulario_por_tipo_de_campo(
+			(array) $fields,
+			array(
+				'clave_tipo'  => 'type',
+				'clave_valor' => 'value',
+			)
+		);
+
 		return array(
 			'form_id'  => $form_data['id'] ?? null,
 			'entry_id' => $entry_id,
-			'email'    => $email,
-			'nombre'   => $nombre,
+			'email'    => $campos['email'],
+			'nombre'   => $campos['nombre'],
+		);
+	}
+
+	/**
+	 * forminator_custom_form_submit_before_set_fields: do_action(
+	 *   'forminator_custom_form_submit_before_set_fields', $entry,
+	 *   $module_id, $field_data_array
+	 * ) — TRES argumentos, confirmado contra el código fuente real de
+	 * Forminator (front-action.php, set_field_data() y
+	 * set_field_data_array()) ejecutándose en costalegre. Cada elemento de
+	 * $field_data_array trae 'name' (el field id), 'value' y 'field_type'
+	 * (NO 'type' como Gravity Forms/WPForms — clave distinta, mismo shape)
+	 * — 'field_type' toma los valores 'email'/'name' declarados en
+	 * library/fields/email.php y name.php. El campo "name" puede llegar
+	 * como string simple o como array con sub-claves (first/last) según
+	 * cómo esté configurado en el editor — se concatena si es array.
+	 */
+	private static function extraer_forminator_form_submit( $argumentos ) {
+		$field_data_array = $argumentos[2] ?? array();
+
+		$resolver_valor = function ( $campo ) {
+			$valor = $campo['value'] ?? null;
+			if ( is_array( $valor ) ) {
+				return trim( implode( ' ', array_filter( $valor, 'is_scalar' ) ) ) ?: null;
+			}
+			return $valor;
+		};
+
+		$campos = self::extraer_formulario_por_tipo_de_campo(
+			(array) $field_data_array,
+			array(
+				'clave_tipo'     => 'field_type',
+				'resolver_valor' => $resolver_valor,
+			)
+		);
+
+		return array(
+			'form_id'  => $argumentos[1] ?? null,
+			'entry_id' => null,
+			'email'    => $campos['email'],
+			'nombre'   => $campos['nombre'],
+		);
+	}
+
+	/**
+	 * Extractor genérico reusado por las 3 familias de formularios de
+	 * arriba (Gravity Forms, WPForms, Forminator) — el patrón que se repite
+	 * en los tres es idéntico: una lista de "campos", cada uno con una
+	 * clave que indica su TIPO ("email"/"name") y alguna forma de resolver
+	 * su valor real. Lo único que cambia entre plugins es el NOMBRE de esas
+	 * claves y, en el caso de Gravity Forms, que el valor no viene directo
+	 * en el campo sino que hay que ir a buscarlo a $entry por id — de ahí
+	 * el parámetro resolver_valor en vez de asumir siempre 'clave_valor'.
+	 *
+	 * Agregar un plugin nuevo de esta familia (Ninja Forms, Formidable,
+	 * Fluent Forms, etc.) es: confirmar contra su código/documentación (a)
+	 * el nombre del hook y la posición del array de campos en sus
+	 * argumentos, (b) qué clave marca el tipo de campo y qué valores toma
+	 * para email/nombre, (c) cómo se resuelve el valor real — y escribir un
+	 * extractor de una función corta que llame a esta, igual que los tres
+	 * de arriba. Nunca escribir un cuarto bucle de filtrado desde cero.
+	 *
+	 * Limitación heredada de los extractores originales, no nueva: si el
+	 * formulario tiene más de un campo del mismo tipo, se queda con el
+	 * PRIMERO; si no tiene ninguno, la clave queda null.
+	 *
+	 * @param array $campos Lista de campos del formulario.
+	 * @param array $opciones {
+	 *     @type string        $clave_tipo     Clave que indica el tipo de campo (ej. 'type', 'field_type'). Obligatorio.
+	 *     @type string        $clave_id       Clave del identificador del campo, para pasarlo a resolver_valor. Opcional.
+	 *     @type string        $clave_valor    Clave del valor ya resuelto dentro del propio campo (ej. 'value'). Ignorado si se pasa resolver_valor.
+	 *     @type callable|null $resolver_valor function($campo, $id) => valor real. Si no se pasa, se usa $campo[$clave_valor].
+	 * }
+	 * @return array{email: mixed, nombre: mixed}
+	 */
+	private static function extraer_formulario_por_tipo_de_campo( $campos, $opciones ) {
+		$clave_tipo     = $opciones['clave_tipo'];
+		$clave_id       = $opciones['clave_id'] ?? 'id';
+		$clave_valor    = $opciones['clave_valor'] ?? 'value';
+		$resolver_valor = $opciones['resolver_valor'] ?? function ( $campo ) use ( $clave_valor ) {
+			return is_array( $campo ) ? ( $campo[ $clave_valor ] ?? null ) : null;
+		};
+
+		$email  = null;
+		$nombre = null;
+		foreach ( $campos as $campo ) {
+			$tipo = is_object( $campo ) ? ( $campo->{$clave_tipo} ?? null ) : ( $campo[ $clave_tipo ] ?? null );
+			$id   = is_object( $campo ) ? ( $campo->{$clave_id} ?? null ) : ( $campo[ $clave_id ] ?? null );
+
+			if ( $tipo === 'email' && $email === null ) {
+				$email = $resolver_valor( $campo, $id );
+			}
+			if ( $tipo === 'name' && $nombre === null ) {
+				$nombre = $resolver_valor( $campo, $id );
+			}
+		}
+		return array(
+			'email'  => $email,
+			'nombre' => $nombre,
 		);
 	}
 
