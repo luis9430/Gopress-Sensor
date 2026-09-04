@@ -141,6 +141,11 @@ class GoPress_Agente_Hooks_Negocio {
 		'woocommerce_order_status_refunded'            => array( __CLASS__, 'extraer_woocommerce_order' ),
 		'woocommerce_order_refunded'                   => array( __CLASS__, 'extraer_woocommerce_order_refunded' ),
 		'wcfmmp_new_store_created'                     => array( __CLASS__, 'extraer_wcfmmp_new_store_created' ),
+		'um_registration_complete'                     => array( __CLASS__, 'extraer_um_registration_complete' ),
+		'job_manager_job_submitted'                    => array( __CLASS__, 'extraer_job_manager_job_submitted' ),
+		'em_booking_added'                             => array( __CLASS__, 'extraer_em_booking_added' ),
+		'awsm_job_application_submitted'               => array( __CLASS__, 'extraer_awsm_job_application_submitted' ),
+		'rtb_insert_booking'                           => array( __CLASS__, 'extraer_rtb_insert_booking' ),
 	);
 
 	/**
@@ -862,6 +867,132 @@ class GoPress_Agente_Hooks_Negocio {
 			'vendor_id'  => $vendor_id,
 			'store_name' => $vendor_id ? get_user_meta( $vendor_id, 'wcfmmp_store_name', true ) : null,
 			'user_email' => $usuario ? $usuario->user_email : null,
+		);
+	}
+
+	/**
+	 * um_registration_complete: do_action('um_registration_complete',
+	 * $user_id, $args, $form_data) — TRES argumentos, confirmado contra el
+	 * código fuente real de Ultimate Member
+	 * (includes/core/um-actions-register.php), con docblock oficial
+	 * completo. $args es el $_POST crudo del formulario de registro (sus
+	 * claves varían según qué campos configuró el admin) — no se lee
+	 * directo: se relee el usuario real vía get_userdata(), mismo criterio
+	 * que extraer_user_register(). 'account_status' es un user meta real
+	 * que UM guarda ('pending'/'awaiting_admin_review'/'approved') — releído
+	 * para saber si el registro quedó pendiente de aprobación o ya activo,
+	 * dato importante para decidir si vale la pena disparar la
+	 * automatización de inmediato o esperar la aprobación.
+	 */
+	private static function extraer_um_registration_complete( $argumentos ) {
+		$user_id = $argumentos[0] ?? null;
+		$usuario = $user_id ? get_userdata( $user_id ) : false;
+		return array(
+			'user_id'        => $user_id,
+			'user_login'     => $usuario ? $usuario->user_login : null,
+			'user_email'     => $usuario ? $usuario->user_email : null,
+			'account_status' => $user_id ? get_user_meta( $user_id, 'account_status', true ) : null,
+		);
+	}
+
+	/**
+	 * job_manager_job_submitted: do_action('job_manager_job_submitted',
+	 * $job_id) — UN solo argumento, confirmado contra el código fuente real
+	 * de WP Job Manager
+	 * (includes/forms/class-wp-job-manager-form-submit-job.php), con
+	 * docblock oficial. Nota real: el hook documentado en foros de
+	 * terceros como "aplicación recibida"
+	 * (job_manager_applications_new_job_application) NO existe en el core
+	 * gratuito — es del addon de pago "Applications", confirmado ausente
+	 * en el código instalado. Este hook es distinto: "empleo publicado por
+	 * un empleador", un evento de negocio igual de válido (ej. "avisar al
+	 * admin para revisar antes de aprobar"). Los meta keys se confirmaron
+	 * contra el mismo formulario que dispara el hook (update_post_meta con
+	 * prefijo '_'), estándar de facto de todo el ecosistema de WP Job
+	 * Manager (usado también por sus themes compatibles).
+	 */
+	private static function extraer_job_manager_job_submitted( $argumentos ) {
+		$job_id = $argumentos[0] ?? null;
+		$post   = $job_id ? get_post( $job_id ) : null;
+		return array(
+			'job_id'       => $job_id,
+			'titulo'       => $post ? $post->post_title : null,
+			'empresa'      => $job_id ? get_post_meta( $job_id, '_company_name', true ) : null,
+			'ubicacion'    => $job_id ? get_post_meta( $job_id, '_job_location', true ) : null,
+		);
+	}
+
+	/**
+	 * em_booking_added: do_action('em_booking_added', $EM_Booking, $mail) —
+	 * DOS argumentos, confirmado contra el código fuente real de Events
+	 * Manager (classes/em-booking.php), con docblock oficial completo. El
+	 * nombre real es SINGULAR ('em_booking_added', no 'em_bookings_added'
+	 * como se documentó erróneamente antes de confirmar contra código
+	 * fuente). $EM_Booking->person es un objeto EM_Person que EXTIENDE
+	 * WP_User (confirmado en classes/em-person.php) — trae user_email/
+	 * display_name directo, sin necesidad de releer nada aparte.
+	 */
+	private static function extraer_em_booking_added( $argumentos ) {
+		$booking = $argumentos[0] ?? null;
+		if ( ! is_object( $booking ) ) {
+			return array();
+		}
+		$persona = property_exists( $booking, 'person' ) ? $booking->person : null;
+		return array(
+			'booking_id'      => $booking->booking_id ?? null,
+			'event_id'        => $booking->event_id ?? null,
+			'booking_spaces'  => $booking->booking_spaces ?? null,
+			'user_email'      => ( $persona instanceof WP_User ) ? $persona->user_email : null,
+			'nombre'          => ( $persona instanceof WP_User ) ? $persona->display_name : null,
+		);
+	}
+
+	/**
+	 * awsm_job_application_submitted: do_action(
+	 *   'awsm_job_application_submitted', $application_id
+	 * ) — UN solo argumento, confirmado contra el código fuente real de
+	 * HireZoot/WP Job Openings (inc/class-awsm-job-openings-form.php), con
+	 * docblock oficial. Los meta keys ('awsm_applicant_name',
+	 * 'awsm_applicant_email', etc.) se guardan vía update_post_meta()
+	 * INMEDIATAMENTE ANTES del do_action, en la misma función — releerlos
+	 * es seguro y confiable.
+	 */
+	private static function extraer_awsm_job_application_submitted( $argumentos ) {
+		$application_id = $argumentos[0] ?? null;
+		if ( ! $application_id ) {
+			return array( 'application_id' => null );
+		}
+		return array(
+			'application_id' => $application_id,
+			'job_id'         => get_post_meta( $application_id, 'awsm_job_id', true ),
+			'puesto'         => get_post_meta( $application_id, 'awsm_apply_for', true ),
+			'nombre'         => get_post_meta( $application_id, 'awsm_applicant_name', true ),
+			'email'          => get_post_meta( $application_id, 'awsm_applicant_email', true ),
+			'telefono'       => get_post_meta( $application_id, 'awsm_applicant_phone', true ),
+		);
+	}
+
+	/**
+	 * rtb_insert_booking: do_action('rtb_' . $action . '_booking', $this)
+	 * con $action='insert' para una reserva NUEVA — confirmado contra el
+	 * código fuente real de Five Star Restaurant Reservations
+	 * (includes/Booking.class.php, Booking::insert_booking()). Un solo
+	 * argumento: el objeto Booking completo. 'name'/'email'/'phone'/'party'
+	 * son propiedades públicas confirmadas contra
+	 * Booking::load_wp_post()/load_post_metadata() — 'name' viene del
+	 * TÍTULO del post (post_title), no de un campo de metadata separado.
+	 */
+	private static function extraer_rtb_insert_booking( $argumentos ) {
+		$booking = $argumentos[0] ?? null;
+		if ( ! is_object( $booking ) ) {
+			return array();
+		}
+		return array(
+			'booking_id' => $booking->ID ?? null,
+			'nombre'     => $booking->name ?? null,
+			'email'      => $booking->email ?? null,
+			'telefono'   => $booking->phone ?? null,
+			'personas'   => $booking->party ?? null,
 		);
 	}
 
