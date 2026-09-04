@@ -131,6 +131,9 @@ class GoPress_Agente_Hooks_Negocio {
 		'tutor_after_enroll'                           => array( __CLASS__, 'extraer_tutor_after_enroll' ),
 		'tutor_course_complete_after'                  => array( __CLASS__, 'extraer_tutor_course_complete_after' ),
 		'tutor_quiz_finished'                          => array( __CLASS__, 'extraer_tutor_quiz_finished' ),
+		'ninja_forms_after_submission'                 => array( __CLASS__, 'extraer_ninja_forms_after_submission' ),
+		'frm_after_create_entry'                       => array( __CLASS__, 'extraer_frm_after_create_entry' ),
+		'fluentform/submission_inserted'               => array( __CLASS__, 'extraer_fluentform_submission_inserted' ),
 	);
 
 	/**
@@ -625,6 +628,141 @@ class GoPress_Agente_Hooks_Negocio {
 			'quiz_id'    => $quiz_id,
 			'user_id'    => $user_id,
 			'result'     => $resultado ?: null,
+		);
+	}
+
+	/**
+	 * ninja_forms_after_submission: do_action('ninja_forms_after_submission',
+	 * $data) — UN solo argumento, confirmado contra el código fuente real de
+	 * Ninja Forms (includes/AJAX/Controllers/Submission.php). $data['fields']
+	 * es un array indexado por field_id, cada elemento con 'type' y 'value' —
+	 * mismo shape reusable que Gravity Forms/WPForms/Forminator. A diferencia
+	 * de esos tres, Ninja Forms NO tiene un tipo 'name' único: separa
+	 * 'firstname'/'lastname' (confirmado en includes/Fields/FirstName.php y
+	 * LastName.php) — mismo caso que Everest Forms, solo que sin guión en el
+	 * nombre del tipo.
+	 */
+	private static function extraer_ninja_forms_after_submission( $argumentos ) {
+		$data   = $argumentos[0] ?? array();
+		$fields = $data['fields'] ?? array();
+
+		$campos = self::extraer_formulario_por_tipo_de_campo(
+			(array) $fields,
+			array(
+				'clave_tipo'   => 'type',
+				'clave_valor'  => 'value',
+				'tipos_nombre' => array( 'firstname', 'lastname' ),
+			)
+		);
+
+		return array(
+			'form_id'  => $data['form_id'] ?? null,
+			'entry_id' => $data['id'] ?? null,
+			'email'    => $campos['email'],
+			'nombre'   => $campos['nombre'],
+		);
+	}
+
+	/**
+	 * frm_after_create_entry: do_action('frm_after_create_entry', $entry_id,
+	 * $form_id, $args) — TRES argumentos, confirmado contra el código fuente
+	 * real de Formidable Forms (classes/models/FrmEntry.php). A diferencia de
+	 * los extractores de arriba, este hook NO trae ningún campo del
+	 * formulario — solo IDs. Se relee la entrada completa vía la función
+	 * pública FrmEntry::getOne($id, true), que arma $entry->metas (valores
+	 * indexados por field_id, SIN el tipo de campo — confirmado en
+	 * FrmEntry::get_meta(), la columna 'type' se usa solo para sanitizar el
+	 * valor y se descarta después) — por eso hace falta una segunda consulta
+	 * a FrmField::get_all_types_in_form() para encontrar el field_id de tipo
+	 * 'email'/'name'. El campo 'name' de Formidable es compuesto
+	 * (sub-claves 'first'/'last'/'middle', confirmado en
+	 * classes/models/fields/FrmFieldName.php) — se concatena 'first' + 'last'
+	 * con el mismo orden que usa el propio plugin para mostrarlo.
+	 */
+	private static function extraer_frm_after_create_entry( $argumentos ) {
+		$entry_id = $argumentos[0] ?? null;
+		$form_id  = $argumentos[1] ?? null;
+
+		if ( ! class_exists( 'FrmEntry' ) || ! class_exists( 'FrmField' ) || ! $entry_id ) {
+			return array( 'form_id' => $form_id, 'entry_id' => $entry_id, 'email' => null, 'nombre' => null );
+		}
+
+		$entry = FrmEntry::getOne( $entry_id, true );
+		$metas = ( $entry && isset( $entry->metas ) ) ? (array) $entry->metas : array();
+
+		$campo_email = FrmField::get_all_types_in_form( $form_id, 'email', 1 );
+		$campo_email_id = is_object( $campo_email ) ? $campo_email->id : null;
+		$email = $campo_email_id ? ( $metas[ $campo_email_id ] ?? null ) : null;
+
+		$campo_nombre = FrmField::get_all_types_in_form( $form_id, 'name', 1 );
+		$campo_nombre_id = is_object( $campo_nombre ) ? $campo_nombre->id : null;
+		$valor_nombre = $campo_nombre_id ? ( $metas[ $campo_nombre_id ] ?? null ) : null;
+		$nombre = null;
+		if ( is_array( $valor_nombre ) ) {
+			$nombre = trim( ( $valor_nombre['first'] ?? '' ) . ' ' . ( $valor_nombre['last'] ?? '' ) );
+			$nombre = $nombre !== '' ? $nombre : null;
+		} elseif ( is_string( $valor_nombre ) && $valor_nombre !== '' ) {
+			$nombre = $valor_nombre;
+		}
+
+		return array(
+			'form_id'  => $form_id,
+			'entry_id' => $entry_id,
+			'email'    => is_scalar( $email ) ? $email : null,
+			'nombre'   => $nombre,
+		);
+	}
+
+	/**
+	 * fluentform/submission_inserted: do_action('fluentform/submission_inserted',
+	 * $insertId, $formData, $form) — TRES argumentos, confirmado contra el
+	 * código fuente real de Fluent Forms
+	 * (app/Services/Form/SubmissionHandlerService.php). Existe también la
+	 * variante deprecada 'fluentform_submission_inserted' (con guión bajo, no
+	 * slash) — no se engancha acá, el propio plugin la marca como legacy.
+	 * $formData es un array PLANO 'nombre_de_input => valor' (el $_POST ya
+	 * sanitizado y filtrado) — sin 'type' por campo, a diferencia de Gravity
+	 * Forms/WPForms/Forminator/Ninja Forms. Se identifica qué input es
+	 * email/nombre vía la API pública de parseo de formularios
+	 * (FormFieldsParser::getInputsByElementTypes(), confirmado en
+	 * app/Services/Parser/Form.php) filtrando por 'element' ('input_email'/
+	 * 'input_name'). El campo input_name es compuesto (array de sub-valores,
+	 * confirmado en PaymentHelper::getFormInput() usando el mismo patrón de
+	 * array_filter + implode(' ', ...) que se reusa acá).
+	 */
+	private static function extraer_fluentform_submission_inserted( $argumentos ) {
+		$insert_id = $argumentos[0] ?? null;
+		$form_data = $argumentos[1] ?? array();
+		$form      = $argumentos[2] ?? null;
+
+		$form_id = is_object( $form ) ? ( $form->id ?? null ) : null;
+
+		if ( ! class_exists( '\FluentForm\App\Modules\Form\FormFieldsParser' ) || ! $form ) {
+			return array( 'form_id' => $form_id, 'entry_id' => $insert_id, 'email' => null, 'nombre' => null );
+		}
+
+		$parser = '\FluentForm\App\Modules\Form\FormFieldsParser';
+
+		$campo_email = $parser::getInputsByElementTypes( $form, array( 'input_email' ) );
+		$nombre_campo_email = $campo_email ? array_key_first( $campo_email ) : null;
+		$email = $nombre_campo_email ? ( $form_data[ $nombre_campo_email ] ?? null ) : null;
+
+		$campo_nombre = $parser::getInputsByElementTypes( $form, array( 'input_name' ) );
+		$nombre_campo_nombre = $campo_nombre ? array_key_first( $campo_nombre ) : null;
+		$valor_nombre = $nombre_campo_nombre ? ( $form_data[ $nombre_campo_nombre ] ?? null ) : null;
+		$nombre = null;
+		if ( is_array( $valor_nombre ) ) {
+			$partes = array_filter( $valor_nombre, 'is_scalar' );
+			$nombre = trim( implode( ' ', $partes ) ) ?: null;
+		} elseif ( is_string( $valor_nombre ) && $valor_nombre !== '' ) {
+			$nombre = $valor_nombre;
+		}
+
+		return array(
+			'form_id'  => $form_id,
+			'entry_id' => $insert_id,
+			'email'    => is_scalar( $email ) ? $email : null,
+			'nombre'   => $nombre,
 		);
 	}
 
