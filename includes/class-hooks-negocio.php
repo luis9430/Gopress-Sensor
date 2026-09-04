@@ -122,6 +122,11 @@ class GoPress_Agente_Hooks_Negocio {
 		'forminator_custom_form_submit_before_set_fields' => array( __CLASS__, 'extraer_forminator_form_submit' ),
 		'metform_after_store_form_data'               => array( __CLASS__, 'extraer_metform_after_store_form_data' ),
 		'everest_forms_process_complete'              => array( __CLASS__, 'extraer_everest_forms_process_complete' ),
+		'bp_core_activated_user'                      => array( __CLASS__, 'extraer_bp_core_activated_user' ),
+		'groups_join_group'                           => array( __CLASS__, 'extraer_bp_groups_join_group' ),
+		'groups_leave_group'                          => array( __CLASS__, 'extraer_bp_groups_leave_group' ),
+		'bp_activity_add'                              => array( __CLASS__, 'extraer_bp_activity_add' ),
+		'friends_friendship_accepted'                  => array( __CLASS__, 'extraer_bp_friends_friendship_accepted' ),
 	);
 
 	/**
@@ -417,6 +422,97 @@ class GoPress_Agente_Hooks_Negocio {
 			'entry_id' => $entry_id,
 			'email'    => $campos['email'],
 			'nombre'   => $campos['nombre'],
+		);
+	}
+
+	/**
+	 * bp_core_activated_user: do_action('bp_core_activated_user', $user_id,
+	 * $key, $user) — TRES argumentos, confirmado contra el código fuente
+	 * real de BuddyPress (bp-members/bp-members-functions.php) ejecutándose
+	 * en costalegre. $user es un ARRAY plano (no un objeto WP_User), con
+	 * las claves 'user_login'/'user_email' entre otras (armado a mano en la
+	 * misma función antes del do_action) — no confundir con el $user de
+	 * wp_login (ese sí es WP_User). $key es la clave de activación de la
+	 * cuenta, no se reenvía: es un secreto de un solo uso, no aporta valor
+	 * a una automatización y exponerlo no tiene sentido.
+	 */
+	private static function extraer_bp_core_activated_user( $argumentos ) {
+		$user_id = $argumentos[0] ?? null;
+		$user    = $argumentos[2] ?? array();
+		return array(
+			'user_id'    => $user_id,
+			'user_login' => is_array( $user ) ? ( $user['user_login'] ?? null ) : null,
+			'user_email' => is_array( $user ) ? ( $user['user_email'] ?? null ) : null,
+		);
+	}
+
+	/**
+	 * groups_join_group: do_action('groups_join_group', $group_id,
+	 * $user_id, $group) — TRES argumentos, confirmado contra el código
+	 * fuente real (bp-groups/bp-groups-functions.php). $group es un objeto
+	 * BP_Groups_Group con propiedades públicas 'id'/'name' (confirmado
+	 * contra classes/class-bp-groups-group.php) — se reenvía solo el
+	 * nombre, no la descripción completa del grupo (sin valor claro para
+	 * una automatización, y puede contener HTML largo).
+	 */
+	private static function extraer_bp_groups_join_group( $argumentos ) {
+		$group_id = $argumentos[0] ?? null;
+		$user_id  = $argumentos[1] ?? null;
+		$group    = $argumentos[2] ?? null;
+		return array(
+			'group_id'   => $group_id,
+			'user_id'    => $user_id,
+			'group_name' => ( is_object( $group ) && isset( $group->name ) ) ? $group->name : null,
+		);
+	}
+
+	/**
+	 * groups_leave_group: do_action('groups_leave_group', $group->id,
+	 * $user_id, $group) — mismos TRES argumentos y misma forma de $group
+	 * que groups_join_group (confirmado en la misma función,
+	 * bp-groups-functions.php), reusa el mismo extractor de forma.
+	 */
+	private static function extraer_bp_groups_leave_group( $argumentos ) {
+		return self::extraer_bp_groups_join_group( $argumentos );
+	}
+
+	/**
+	 * bp_activity_add: do_action('bp_activity_add', $r, $activity_id) — DOS
+	 * argumentos, confirmado contra el código fuente real
+	 * (bp-activity/bp-activity-functions.php). $r es un array de
+	 * argumentos YA nombrados (parsed por wp_parse_args antes de esta
+	 * función) — 'user_id', 'component' (ej. 'groups', 'activity'),
+	 * 'type' (ej. 'activity_update', 'joined_group'), 'content'. No hace
+	 * falta ningún extractor de campos tipo formulario: la forma ya es
+	 * estable de por sí. 'content' puede traer HTML sin escapar (se
+	 * respeta tal cual, la decisión de sanitizar queda del lado de quien
+	 * consuma la automatización).
+	 */
+	private static function extraer_bp_activity_add( $argumentos ) {
+		$r           = $argumentos[0] ?? array();
+		$activity_id = $argumentos[1] ?? null;
+		return array(
+			'activity_id' => $activity_id,
+			'user_id'     => $r['user_id'] ?? null,
+			'component'   => $r['component'] ?? null,
+			'type'        => $r['type'] ?? null,
+			'content'     => $r['content'] ?? null,
+		);
+	}
+
+	/**
+	 * friends_friendship_accepted: do_action('friends_friendship_accepted',
+	 * $friendship_id, $initiator_user_id, $friend_user_id, $friendship) —
+	 * CUATRO argumentos, confirmado contra el código fuente real
+	 * (bp-friends/bp-friends-functions.php). Los primeros tres argumentos
+	 * ya son los IDs que hacen falta — no hace falta tocar el objeto
+	 * $friendship en absoluto.
+	 */
+	private static function extraer_bp_friends_friendship_accepted( $argumentos ) {
+		return array(
+			'friendship_id'      => $argumentos[0] ?? null,
+			'initiator_user_id'  => $argumentos[1] ?? null,
+			'friend_user_id'     => $argumentos[2] ?? null,
 		);
 	}
 
