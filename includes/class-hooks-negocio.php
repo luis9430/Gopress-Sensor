@@ -146,6 +146,8 @@ class GoPress_Agente_Hooks_Negocio {
 		'em_booking_added'                             => array( __CLASS__, 'extraer_em_booking_added' ),
 		'awsm_job_application_submitted'               => array( __CLASS__, 'extraer_awsm_job_application_submitted' ),
 		'rtb_insert_booking'                           => array( __CLASS__, 'extraer_rtb_insert_booking' ),
+		'learn-press/user-course/finished'             => array( __CLASS__, 'extraer_learnpress_course_finished' ),
+		'learnpress/user/course-enrolled'              => array( __CLASS__, 'extraer_learnpress_course_enrolled' ),
 	);
 
 	/**
@@ -993,6 +995,49 @@ class GoPress_Agente_Hooks_Negocio {
 			'email'      => $booking->email ?? null,
 			'telefono'   => $booking->phone ?? null,
 			'personas'   => $booking->party ?? null,
+		);
+	}
+
+	/**
+	 * learn-press/user-course/finished: do_action(
+	 *   'learn-press/user-course/finished', $this
+	 * ) — UN solo argumento (un objeto UserCourseModel), confirmado contra
+	 * el código fuente real de LearnPress
+	 * (inc/Models/UserItems/UserCourseModel.php, método handle_finish()).
+	 * Ese mismo método dispara TAMBIÉN 'learn-press/user-course-finished'
+	 * (con guión, 3 IDs planos) inmediatamente antes — se usa el de slash
+	 * porque trae acceso a get_graduation() (PASSED/FAILED, calculado justo
+	 * antes en $course_results['pass']), dato que el hook simple no
+	 * incluye. $user_id/$item_id (=course_id en este contexto) son
+	 * propiedades PÚBLICAS confirmadas en la clase base UserItemModel.
+	 */
+	private static function extraer_learnpress_course_finished( $argumentos ) {
+		$user_course = $argumentos[0] ?? null;
+		if ( ! is_object( $user_course ) ) {
+			return array();
+		}
+		return array(
+			'user_id'    => $user_course->user_id ?? null,
+			'course_id'  => $user_course->item_id ?? null,
+			'graduation' => method_exists( $user_course, 'get_graduation' ) ? $user_course->get_graduation() : null,
+		);
+	}
+
+	/**
+	 * learnpress/user/course-enrolled: do_action(
+	 *   'learnpress/user/course-enrolled', $order_id, $item_id, $user_id
+	 * ) — TRES IDs planos, confirmado contra el código fuente real
+	 * (inc/user/class-lp-user-factory.php) en las dos rutas donde se
+	 * dispara. $item_id es el course_id (LearnPress llama "item" a
+	 * cualquier contenido inscribible, curso incluido) — mismo nombre de
+	 * campo que usa el propio plugin en su array interno
+	 * ($user_item_data['item_id']).
+	 */
+	private static function extraer_learnpress_course_enrolled( $argumentos ) {
+		return array(
+			'order_id'  => $argumentos[0] ?? null,
+			'course_id' => $argumentos[1] ?? null,
+			'user_id'   => $argumentos[2] ?? null,
 		);
 	}
 
