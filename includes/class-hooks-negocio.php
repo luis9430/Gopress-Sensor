@@ -148,6 +148,7 @@ class GoPress_Agente_Hooks_Negocio {
 		'rtb_insert_booking'                           => array( __CLASS__, 'extraer_rtb_insert_booking' ),
 		'learn-press/user-course/finished'             => array( __CLASS__, 'extraer_learnpress_course_finished' ),
 		'learnpress/user/course-enrolled'              => array( __CLASS__, 'extraer_learnpress_course_enrolled' ),
+		'newsletter_user_confirmed'                    => array( __CLASS__, 'extraer_newsletter_user_confirmed' ),
 	);
 
 	/**
@@ -1038,6 +1039,31 @@ class GoPress_Agente_Hooks_Negocio {
 			'order_id'  => $argumentos[0] ?? null,
 			'course_id' => $argumentos[1] ?? null,
 			'user_id'   => $argumentos[2] ?? null,
+		);
+	}
+
+	/**
+	 * newsletter_user_confirmed: do_action('newsletter_user_confirmed',
+	 * $user) — UN solo argumento, confirmado contra el código fuente real
+	 * del plugin "Newsletter" (Stefano Lissa/Every Dev,
+	 * subscription/subscription.php). Se dispara cuando la suscripción NO
+	 * requiere activación (single opt-in, o double opt-in ya confirmado) —
+	 * cubre ambos casos de "suscriptor listo para recibir correos", a
+	 * diferencia de newsletter_user_post_subscribe (dispara siempre, incluso
+	 * si falta confirmar el email todavía — no se usó porque incluiría
+	 * suscriptores sin confirmar). $user es un objeto TNP_User con
+	 * propiedades públicas directas (confirmado en
+	 * includes/classes.php): id/email/name/surname/status.
+	 */
+	private static function extraer_newsletter_user_confirmed( $argumentos ) {
+		$user = $argumentos[0] ?? null;
+		if ( ! is_object( $user ) ) {
+			return array();
+		}
+		return array(
+			'subscriber_id' => $user->id ?? null,
+			'email'         => $user->email ?? null,
+			'nombre'        => trim( ( $user->name ?? '' ) . ' ' . ( $user->surname ?? '' ) ) ?: null,
 		);
 	}
 
