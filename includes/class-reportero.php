@@ -36,8 +36,17 @@ class GoPress_Agente_Reportero {
 	 * lo manda a GoPress, y solo borra el buffer si el POST tuvo éxito. Si
 	 * el buffer está vacío no manda nada — no tiene sentido un POST con
 	 * requests_medidos=0 cada 5 minutos en un sitio sin tráfico.
+	 *
+	 * El reporte de hooks investigados (ver class-investigacion-hooks.php)
+	 * es un mecanismo INDEPENDIENTE del buffer de telemetría — corre
+	 * siempre en el mismo tick, antes del "return" de buffer vacío: un
+	 * sitio con poco tráfico técnico (buffer vacío) puede perfectamente
+	 * tener hooks de negocio capturados durante una sesión de
+	 * investigación activa, y viceversa.
 	 */
 	public static function reportar() {
+		GoPress_Agente_Investigacion_Hooks::reportar_si_corresponde();
+
 		$filas = GoPress_Agente_Buffer::obtener_todas();
 		if ( empty( $filas ) ) {
 			return;
@@ -85,9 +94,10 @@ class GoPress_Agente_Reportero {
 
 	/**
 	 * Body 200 con instrucciones pendientes: modo diagnóstico profundo (ver
-	 * sección 9) y, desde la integración con Activepieces, la lista vigente
-	 * de hooks de negocio a escuchar (ver class-hooks-negocio.php). Un JSON
-	 * inválido no rompe el flujo (json_decode devuelve null y se ignora).
+	 * sección 9), la lista vigente de hooks de negocio a escuchar (ver
+	 * class-hooks-negocio.php), y la ventana de investigación de hooks (ver
+	 * class-investigacion-hooks.php). Un JSON inválido no rompe el flujo
+	 * (json_decode devuelve null y se ignora).
 	 *
 	 * hooks_negocio se guarda si la CLAVE está presente, incluso con un
 	 * array VACÍO — eso es lo que permite desactivar todos los hooks desde
@@ -107,6 +117,9 @@ class GoPress_Agente_Reportero {
 		}
 		if ( array_key_exists( 'hooks_negocio', $datos ) && is_array( $datos['hooks_negocio'] ) ) {
 			GoPress_Agente_Hooks_Negocio::guardar_config( $datos['hooks_negocio'] );
+		}
+		if ( ! empty( $datos['investigacion_hooks_hasta'] ) ) {
+			GoPress_Agente_Investigacion_Hooks::guardar_hasta( $datos['investigacion_hooks_hasta'] );
 		}
 	}
 
