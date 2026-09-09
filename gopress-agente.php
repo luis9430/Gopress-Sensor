@@ -26,6 +26,7 @@ if ( ! defined( 'GOPRESS_AGENTE_ACTIVO' ) ) {
 require_once GOPRESS_AGENTE_DIR . 'includes/class-config.php';
 require_once GOPRESS_AGENTE_DIR . 'includes/class-buffer.php';
 require_once GOPRESS_AGENTE_DIR . 'includes/class-medidor.php';
+require_once GOPRESS_AGENTE_DIR . 'includes/class-investigacion-hooks.php';
 require_once GOPRESS_AGENTE_DIR . 'includes/class-reportero.php';
 require_once GOPRESS_AGENTE_DIR . 'includes/class-hooks-negocio.php';
 
@@ -97,5 +98,6 @@ add_filter(
 );
 
 GoPress_Agente_Medidor::iniciar();
+GoPress_Agente_Investigacion_Hooks::iniciar();
 GoPress_Agente_Reportero::iniciar();
 GoPress_Agente_Hooks_Negocio::iniciar();
